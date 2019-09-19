@@ -1,0 +1,147 @@
+#include <stash.h>
+#include <net.h>
+#include <enc28j60.h>
+#include <bufferfiller.h>
+#include <EtherCard.h>
+#include <Wire.h>
+
+const uint8_t arduinoID = 10;
+const char website[] PROGMEM = "itcybertech.com";
+static byte mymac[] = { 0x74, 0x69, 0x69, 0x2D, 0x30, arduinoID };
+byte Ethernet::buffer[700];
+Stash stash;
+
+void setup() {
+  delay(2000);
+  Serial.begin(9600);
+  pinMode(intPin, OUTPUT);
+  while (!Serial) {
+    ; // Wait for serial
+  }
+  intOFF();
+  if (ether.begin(sizeof Ethernet::buffer, mymac, SS) == 0)
+  {
+    // Serial.println("Failed to access Ethernet controller");
+  }
+  ether.dhcpSetup();
+  char websiteIP[] = "136.243.33.67";
+  ether.parseIp(ether.hisip, websiteIP);
+}
+
+void loop()
+{
+  ether.packetLoop(ether.packetReceive());
+  if ((millis() - t) > 10000)
+  {
+    t = millis();
+    update(arduinoID);
+    failedPackets ++;
+  }
+  const char* reply = ether.tcpReply(dataSession);
+  if (reply != 0) {
+    if (String(reply).indexOf("Success") >= 0) {
+      sum = 0;
+      s = 0;
+      Serial.write(start);
+    }
+  }
+  const char* upreply = ether.tcpReply(upSession);
+  if (upreply != 0) {
+    if (String(upreply).indexOf("upOK") >= 0) {
+      failedPackets = 0;
+    }
+  }
+  if (failedPackets > 3) {
+    intOFF();
+  } if (failedPackets < 4 ) {
+    intON();
+  }
+  if (Serial.available() > 0) {
+    data = Serial.read();
+    if (data % 5 == 0 && data > 4)
+    {
+      Serial.write(data);
+      s += data;
+      insertTime = millis();
+      data = 0;
+      billInserted = true;
+    }
+  }
+  if (billInserted && millis() > insertTime + 30000)
+  {
+    sendData(s);
+    billInserted = false;
+  }
+}
+void lcdSend(int money)
+{
+  Serial.write(money);
+}
+void sendData(int totalSum)
+{
+  sum = totalSum;
+  byte sd = stash.create();
+  stash.print("arduinoID=");
+  stash.print(arduinoID);
+  stash.print("&sum=");
+  stash.print(sum);
+  stash.print("&key=2");
+  stash.save();
+  int stash_size = stash.size();
+
+  Stash::prepare(PSTR("POST http://$F/telem/void/add.php HTTP/1.0"
+                      "\r\n"
+                      "Host: $F"
+                      "\r\n"
+                      "Content-Type: application/x-www-form-urlencoded"
+                      "\r\n"
+                      "Content-Length: $D"
+                      "\r\n"
+                      "\r\n"
+                      "$H"),
+                 website, website, stash_size, sd);
+  dataSession = ether.tcpSend();
+}
+void update(byte id)
+{
+  byte sd = stash.create();
+  stash.print("arduinoID=");
+  stash.print(id);
+  stash.print("&key=3");
+  stash.save();
+  int stash_size = stash.size();
+  Stash::prepare(PSTR("POST http://$F/telem/void/add.php HTTP/1.0"
+                      "\r\n"
+                      "Host: $F"
+                      "\r\n"
+                      "Content-Type: application/x-www-form-urlencoded"
+                      "\r\n"
+                      "Content-Length: $D"
+                      "\r\n"
+                      "\r\n"
+                      "$H"),
+                 website, website, stash_size, sd);
+  upSession = ether.tcpSend();
+}
+void intOFF()
+{
+  if (intKey == 1)
+  {
+    intKey = 0;
+    Serial.write(intKey); // Set LCD to indicate "Internet Error!!!"
+    digitalWrite(intPin, LOW); // Disable bill acceptor
+  }
+}
+void intON()
+{
+  if (intKey == 0)
+  {
+    if (s > 0 )
+    {
+     sendData(s); // test
+    }
+    intKey = 1;
+    Serial.write(intKey); // Set start Screen
+    digitalWrite(intPin, HIGH); // Enable bill acceptor
+  }
+}
